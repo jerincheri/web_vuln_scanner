@@ -1,0 +1,80 @@
+import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin, urlparse
+import re
+
+# Payloads for testing
+sql_payloads = ["'", "' OR '1'='1", '" OR "1"="1', "'--", "' OR '1'='1' --"]
+xss_payloads = ['<script>alert(1)</script>', '"><script>alert(1)</script>']
+
+visited_urls = set()
+
+def is_valid_url(url):
+    return url.startswith("http")
+
+def get_forms(url):
+    soup = BeautifulSoup(requests.get(url).content, "html.parser")
+    return soup.find_all("form")
+
+def get_all_links(url):
+    soup = BeautifulSoup(requests.get(url).content, "html.parser")
+    return [urljoin(url, a.get("href")) for a in soup.find_all("a") if a.get("href")]
+
+def submit_form(form, url, payload, test_type):
+    action = form.get("action")
+    method = form.get("method", "get").lower()
+    form_url = urljoin(url, action)
+    inputs = form.find_all(["input", "textarea"])
+
+    data = {}
+    for input in inputs:
+        name = input.get("name")
+        if name:
+            data[name] = payload
+
+    if method == "post":
+        res = requests.post(form_url, data=data)
+    else:
+        res = requests.get(form_url, params=data)
+
+    return res
+
+def scan_xss(url):
+    forms = get_forms(url)
+    for form in forms:
+        for payload in xss_payloads:
+            res = submit_form(form, url, payload, "XSS")
+            if payload in res.text:
+                print(f"[!] XSS Vulnerability Found in {url}")
+                break
+
+def scan_sql_injection(url):
+    for payload in sql_payloads:
+        test_url = f"{url}?id={payload}"
+        res = requests.get(test_url)
+        errors = ["you have an error in your sql syntax",
+                  "warning: mysql", "unclosed quotation mark",
+                  "quoted string not properly terminated"]
+        if any(error.lower() in res.text.lower() for error in errors):
+            print(f"[!] SQL Injection Found at {test_url}")
+            break
+
+def crawl_and_scan(start_url):
+    urls = [start_url]
+    while urls:
+        url = urls.pop()
+        if url in visited_urls or not is_valid_url(url):
+            continue
+        print(f"Scanning: {url}")
+        visited_urls.add(url)
+
+        try:
+            scan_xss(url)
+            scan_sql_injection(url)
+            urls.extend(get_all_links(url))
+        except Exception as e:
+            print(f"Error scanning {url}: {e}")
+
+if __name__ == "__main__":
+    target = input("Enter the target URL (e.g., http://example.com): ")
+    crawl_and_scan(target)
