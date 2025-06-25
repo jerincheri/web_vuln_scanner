@@ -1,80 +1,91 @@
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urljoin, urlparse
-import re
+from urllib.parse import urljoin
+from colorama import init, Fore, Style
 
-# Payloads for testing
-sql_payloads = ["'", "' OR '1'='1", '" OR "1"="1', "'--", "' OR '1'='1' --"]
-xss_payloads = ['<script>alert(1)</script>', '"><script>alert(1)</script>']
+init(autoreset=True)
 
-visited_urls = set()
+# Payloads
+sql_payloads = ["' OR '1'='1", "'--"]
+xss_payloads = ['<script>alert(1)</script>']
 
-def is_valid_url(url):
-    return url.startswith("http")
+# Banner
+def show_banner():
+    print(f"{Fore.CYAN}{Style.BRIGHT}")
+    print("╔═══════════════════════════════════════╗")
+    print("║           VulnScanner v1.0           ║")
+    print("║   Simple Web Vulnerability Scanner   ║")
+    print("╚═══════════════════════════════════════╝")
+    print(f"{Style.RESET_ALL}")
 
+# Get all forms on the page
 def get_forms(url):
-    soup = BeautifulSoup(requests.get(url).content, "html.parser")
-    return soup.find_all("form")
+    try:
+        html = requests.get(url, timeout=5).text
+        soup = BeautifulSoup(html, "html.parser")
+        return soup.find_all("form")
+    except requests.RequestException:
+        print(f"{Fore.RED}[!] Failed to retrieve forms from {url}")
+        return []
 
-def get_all_links(url):
-    soup = BeautifulSoup(requests.get(url).content, "html.parser")
-    return [urljoin(url, a.get("href")) for a in soup.find_all("a") if a.get("href")]
-
-def submit_form(form, url, payload, test_type):
+# Submit a form with a test payload
+def submit_form(form, url, payload):
     action = form.get("action")
     method = form.get("method", "get").lower()
-    form_url = urljoin(url, action)
-    inputs = form.find_all(["input", "textarea"])
+    inputs = form.find_all("input")
 
+    form_url = urljoin(url, action)
     data = {}
-    for input in inputs:
-        name = input.get("name")
+
+    for input_tag in inputs:
+        name = input_tag.get("name")
         if name:
             data[name] = payload
 
-    if method == "post":
-        res = requests.post(form_url, data=data)
-    else:
-        res = requests.get(form_url, params=data)
+    try:
+        if method == "post":
+            return requests.post(form_url, data=data, timeout=5)
+        else:
+            return requests.get(form_url, params=data, timeout=5)
+    except:
+        return None
 
-    return res
-
+# Scan for XSS
 def scan_xss(url):
+    print(f"{Fore.YELLOW}[*] Scanning for XSS...")
     forms = get_forms(url)
     for form in forms:
         for payload in xss_payloads:
-            res = submit_form(form, url, payload, "XSS")
-            if payload in res.text:
-                print(f"[!] XSS Vulnerability Found in {url}")
-                break
+            res = submit_form(form, url, payload)
+            if res and payload in res.text:
+                print(f"{Fore.GREEN}[✔] XSS vulnerability found at {url}")
+                return True
+    print(f"{Fore.CYAN}[–] No XSS found.")
+    return False
 
-def scan_sql_injection(url):
-    for payload in sql_payloads:
-        test_url = f"{url}?id={payload}"
-        res = requests.get(test_url)
-        errors = ["you have an error in your sql syntax",
-                  "warning: mysql", "unclosed quotation mark",
-                  "quoted string not properly terminated"]
-        if any(error.lower() in res.text.lower() for error in errors):
-            print(f"[!] SQL Injection Found at {test_url}")
-            break
+# Scan for SQL Injection
+def scan_sql(url):
+    print(f"{Fore.YELLOW}[*] Scanning for SQL Injection...")
+    forms = get_forms(url)
+    for form in forms:
+        for payload in sql_payloads:
+            res = submit_form(form, url, payload)
+            if res:
+                errors = ["sql syntax", "mysql", "unclosed quotation", "sqlite", "syntax error"]
+                if any(err in res.text.lower() for err in errors):
+                    print(f"{Fore.GREEN}[✔] SQL Injection vulnerability found at {url}")
+                    return True
+    print(f"{Fore.CYAN}[–] No SQL Injection found.")
+    return False
 
-def crawl_and_scan(start_url):
-    urls = [start_url]
-    while urls:
-        url = urls.pop()
-        if url in visited_urls or not is_valid_url(url):
-            continue
-        print(f"Scanning: {url}")
-        visited_urls.add(url)
-
-        try:
-            scan_xss(url)
-            scan_sql_injection(url)
-            urls.extend(get_all_links(url))
-        except Exception as e:
-            print(f"Error scanning {url}: {e}")
-
+# Main
 if __name__ == "__main__":
-    target = input("Enter the target URL (e.g., http://example.com): ")
-    crawl_and_scan(target)
+    show_banner()
+    target = input(f"{Fore.BLUE}[?] Enter target URL (e.g. http://example.com): ").strip()
+    
+    if not target.startswith("http"):
+        print(f"{Fore.RED}[!] Invalid URL. Please include http:// or https://")
+    else:
+        print(f"{Fore.MAGENTA}\n[!] Scanning {target}...\n")
+        scan_xss(target)
+        scan_sql(target)
